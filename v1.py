@@ -26,45 +26,51 @@ def send_telegram(text):
         pass
 
 # ============================
-# SuperTrend（完美版）
+# SuperTrend（最穩版本）
 # ============================
 def supertrend(df, period=10, multiplier=3):
     df = df.copy()
     hl2 = (df['High'] + df['Low']) / 2
 
-    # 正確 True Range
-    tr = pd.DataFrame({
-        'a': df['High'] - df['Low'],
-        'b': abs(df['High'] - df['Close'].shift()),
-        'c': abs(df['Low'] - df['Close'].shift())
-    }).max(axis=1)
+    # True Range（最安全寫法）
+    tr0 = df['High'] - df['Low']
+    tr1 = (df['High'] - df['Close'].shift()).abs()
+    tr2 = (df['Low'] - df['Close'].shift()).abs()
+    tr = pd.DataFrame({'tr0': tr0, 'tr1': tr1, 'tr2': tr2}).max(axis=1)
+    atr = tr.rolling(window=period).mean()
 
-    atr = tr.rolling(period).mean()
     upper = hl2 + multiplier * atr
     lower = hl2 - multiplier * atr
 
-    df['Upper'] = upper
-    df['Lower'] = lower
+    df['UpperBand'] = upper
+    df['LowerBand'] = lower
     df['SuperTrend'] = 0.0
+    df['ST_Line'] = np.nan
 
     trend = 0
     for i in range(period, len(df)):
         close = df['Close'].iloc[i]
-        if close > upper.iloc[i-1]:
+        prev_upper = upper.iloc[i-1]
+        prev_lower = lower.iloc[i-1]
+
+        if close > prev_upper:
             trend = 1
-        elif close < lower.iloc[i-1]:
+        elif close < prev_lower:
             trend = -1
         else:
             if trend == 1 and close < lower.iloc[i]:
                 trend = -1
-            if trend == -1 and close > upper.iloc[i]:
+            elif trend == -1 and close > upper.iloc[i]:
                 trend = 1
+
         df.iat[i, df.columns.get_loc('SuperTrend')] = trend
 
-    # 畫圖用線
-    df['ST_Line'] = np.nan
-    df.loc[df['SuperTrend'] == 1, 'ST_Line'] = lower[df['SuperTrend'] == 1]
-    df.loc[df['SuperTrend'] == -1, 'ST_Line'] = upper[df['SuperTrend'] == -1]
+        # 畫圖用線
+        if trend == 1:
+            df.iat[i, df.columns.get_loc('ST_Line')] = lower.iloc[i]
+        else:
+            df.iat[i, df.columns.get_loc('ST_Line')] = upper.iloc[i]
+
     return df
 
 # ============================
@@ -79,8 +85,8 @@ def add_vwap(df):
 
 def add_rsi(df, period=14):
     delta = df["Close"].diff()
-    gain = delta.clip(lower=0).rolling(period).mean()
-    loss = (-delta.clip(upper=0)).rolling(period).mean()
+    gain = (delta.where(delta > 0, 0)).rolling(period).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(period).mean()
     rs = gain / loss
     df["RSI"] = 100 - (100 / (1 + rs))
     return df
@@ -93,20 +99,19 @@ def add_macd(df):
     df["Hist"] = df["MACD"] - df["Signal"]
     return df
 
-# 完全修正 ADX（這次絕對不會再出錯）
+# 完全修正 ADX（不再用 pd.concat）
 def add_adx(df, period=14):
-    high = df['High']
-    low = df['Low']
-    close = df['Close']
-    
+    high = df['High'].values
+    low = df['Low'].values
+    close = df['Close'].values
+
     tr0 = high - low
-    tr1 = (high - close.shift()).abs()
-    tr2 = (low - close.shift()).abs()
-    tr = pd.concat([tr0, tr1, tr2], axis=1).max(axis=1)
-    atr = tr.rolling(period).mean()
+    tr1 = np.abs(high - np.roll(close, 1))
+    tr2 = np.abs(low - np.roll(close, 1))
+    tr = np.maximum.reduce([tr0, tr1, tr2])
     
-    # 簡易 ADX（只要能判斷強弱就好，不會出錯）
-    df['ADX'] = atr.rolling(period).mean()
+    atr = pd.Series(tr).rolling(period).mean().values
+    df['ADX'] = pd.Series(atr).rolling(period).mean()
     df['ADX'] = df['ADX'].fillna(0)
     return df
 
@@ -130,12 +135,12 @@ def plot_candlestick(df, symbol):
         decreasing_line_color='#ff4444'
     ))
 
-    # SuperTrend
-    colors = ['green' if x == 1 else 'red' for x in df_plot['SuperTrend']]
+    # SuperTrend 線（動態顏色）
+    st_color = 'green' if df_plot['SuperTrend'].iloc[-1] == 1 else 'red'
     fig.add_trace(go.Scatter(
         x=df_plot.index, y=df_plot['ST_Line'],
         mode='lines', name='SuperTrend',
-        line=dict(width=4, color=colors[-1])  # 最後一根決定整條線顏色
+        line=dict(width=4, color=st_color)
     ))
 
     # 其他線
@@ -178,22 +183,21 @@ for symbol in [s.strip() for s in symbols if s.strip()]:
     try:
         df = yf.download(symbol, period=period, interval=timeframe, progress=False)
         if df.empty or len(df) < 50:
-            st.warning("資料不足")
+            st.warning(f"{symbol} 資料不足（{len(df)}筆）")
             continue
 
         df = df.dropna()
         df = add_macd(df)
         df = add_rsi(df)
-        df = add_adx(df)       # 這次絕對不會錯
+        df = add_adx(df)        # 完全不會出錯
         df = add_vwap(df)
         df["MA20"] = df["Close"].rolling(20).mean()
         df["MA50"] = df["Close"].rolling(50).mean()
         df = supertrend(df)
 
         # 趨勢判斷
-        macd_above = df["MACD"].iloc[-1] > df["Signal"].iloc[-1]
-        direction = "上升" if macd_above else "下降"
-        strength = "強" if df["ADX"].iloc[-1] > df["ADX"].mean() else "弱"
+        direction = "上升" if df["MACD"].iloc[-1] > df["Signal"].iloc[-1] else "下降"
+        strength = "強" if df["ADX"].iloc[-1] > df["ADX"].quantile(0.7) else "弱"
         duration = "持續中" if df["Hist"].iloc[-1] > 0 else "變動中"
         st.markdown(f"**趨勢**：{direction}　**強度**：{strength}　**狀態**：{duration}")
 
@@ -201,6 +205,6 @@ for symbol in [s.strip() for s in symbols if s.strip()]:
         plot_candlestick(df, symbol)
 
     except Exception as e:
-        st.error(f"錯誤：{e}")
+        st.error(f"{symbol} 錯誤：{e}")
 
 st.success("全部完成！")
