@@ -23,19 +23,29 @@ def send_telegram(text):
     except: pass
 
 # ============================
-# SuperTrend（最安全寫法）
+# 完全安全的 True Range 計算（關鍵修復！）
+# ============================
+def true_range(df):
+    high = df['High']
+    low = df['Low']
+    close = df['Close']
+    prev_close = close.shift(1)
+    
+    tr0 = high - low
+    tr1 = (high - prev_close).abs()
+    tr2 = (low - prev_close).abs()
+    
+    # 強制變成 DataFrame 再取最大值，保證 1D
+    tr = pd.DataFrame({'tr0': tr0, 'tr1': tr1, 'tr2': tr2}).max(axis=1)
+    return tr
+
+# ============================
+# SuperTrend（使用上面的 safe TR）
 # ============================
 def supertrend(df, period=10, multiplier=3):
     df = df.copy()
     hl2 = (df['High'] + df['Low']) / 2
-
-    # 完全安全的 True Range（使用 np.maximum.reduce）
-    tr = np.maximum.reduce([
-        df['High'] - df['Low'],
-        (df['High'] - df['Close'].shift(1)).abs(),
-        (df['Low'] - df['Close'].shift(1)).abs()
-    ])
-    atr = pd.Series(tr, index=df.index).rolling(period).mean()
+    atr = true_range(df).rolling(period).mean()
 
     upper = hl2 + multiplier * atr
     lower = hl2 - multiplier * atr
@@ -59,7 +69,6 @@ def supertrend(df, period=10, multiplier=3):
                 trend = 1
         df.iat[i, df.columns.get_loc('SuperTrend')] = trend
         df.iat[i, df.columns.get_loc('ST_Line')] = lower.iloc[i] if trend == 1 else upper.iloc[i]
-
     return df
 
 # ============================
@@ -74,7 +83,7 @@ def add_rsi(df, period=14):
     delta = df['Close'].diff()
     gain = delta.clip(lower=0).rolling(period).mean()
     loss = (-delta.clip(upper=0)).rolling(period).mean()
-    df['RSI'] = 100 - (100 / (1 + gain / loss))
+    df['RSI'] = 100 - (100 / (1 + gain/loss))
     return df
 
 def add_macd(df):
@@ -86,14 +95,8 @@ def add_macd(df):
     df['Hist'] = df['MACD'] - df['Signal']
     return df
 
-# 最安全的 ADX（同樣用 np.maximum.reduce）
 def add_adx(df, period=14):
-    tr = np.maximum.reduce([
-        df['High'] - df['Low'],
-        (df['High'] - df['Close'].shift(1)).abs(),
-        (df['Low'] - df['Close'].shift(1)).abs()
-    ])
-    atr = pd.Series(tr, index=df.index).rolling(period).mean()
+    atr = true_range(df).rolling(period).mean()
     df['ADX'] = atr.rolling(period).mean().fillna(0)
     return df
 
@@ -123,7 +126,7 @@ def plot_candlestick(df, symbol):
                             line=dict(color='purple')))
 
     fig.update_layout(
-        title=f"{symbol}　最近 10 根 K 線",
+        title=f"{symbol} 最近 10 根 K 線",
         template="plotly_dark", height=600,
         hovermode="x unified", xaxis_rangeslider_visible=False
     )
@@ -152,7 +155,7 @@ for symbol in [s.strip() for s in symbols if s.strip()]:
     try:
         df = yf.download(symbol, period=period, interval=timeframe, progress=False)
         if df.empty or len(df) < 50:
-            st.warning("資料不足")
+            st.warning("資料不足或無交易")
             continue
 
         df = df.dropna()
