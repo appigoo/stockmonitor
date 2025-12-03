@@ -12,32 +12,30 @@ st.set_page_config(page_title="多股票趨勢監控", layout="wide")
 # Telegram 推播
 # ============================
 sent_alerts = set()
-
 def send_telegram(text):
-    if text in sent_alerts:
-        return
+    if text in sent_alerts: return
     try:
         token = st.secrets["telegram_token"]
         chat_id = st.secrets["telegram_chat_id"]
-        url = f"https://api.telegram.org/bot{token}/sendMessage"
-        requests.post(url, json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"}, timeout=10)
+        requests.post(f"https://api.telegram.org/bot{token}/sendMessage",
+                      json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"}, timeout=10)
         sent_alerts.add(text)
-    except:
-        pass
+    except: pass
 
 # ============================
-# SuperTrend（最穩定版）
+# SuperTrend（最安全寫法）
 # ============================
 def supertrend(df, period=10, multiplier=3):
     df = df.copy()
     hl2 = (df['High'] + df['Low']) / 2
 
-    # 完全用 pandas，避免任何 ndarray 維度問題
-    tr0 = df['High'] - df['Low']
-    tr1 = (df['High'] - df['Close'].shift(1)).abs()
-    tr2 = (df['Low'] - df['Close'].shift(1)).abs()
-    tr = pd.DataFrame([tr0, tr1, tr2]).T.max(axis=1)  # 關鍵：轉置後取最大值
-    atr = tr.rolling(period).mean()
+    # 完全安全的 True Range（使用 np.maximum.reduce）
+    tr = np.maximum.reduce([
+        df['High'] - df['Low'],
+        (df['High'] - df['Close'].shift(1)).abs(),
+        (df['Low'] - df['Close'].shift(1)).abs()
+    ])
+    atr = pd.Series(tr, index=df.index).rolling(period).mean()
 
     upper = hl2 + multiplier * atr
     lower = hl2 - multiplier * atr
@@ -59,28 +57,24 @@ def supertrend(df, period=10, multiplier=3):
                 trend = -1
             elif trend == -1 and close > upper.iloc[i]:
                 trend = 1
-
         df.iat[i, df.columns.get_loc('SuperTrend')] = trend
         df.iat[i, df.columns.get_loc('ST_Line')] = lower.iloc[i] if trend == 1 else upper.iloc[i]
 
     return df
 
 # ============================
-# 其他指標（全部最安全寫法）
+# 其他指標（全部最安全）
 # ============================
 def add_vwap(df):
     pv = df['Close'] * df['Volume']
-    cum_pv = pv.groupby(df.index.date).cumsum()
-    cum_vol = df['Volume'].groupby(df.index.date).cumsum()
-    df['VWAP'] = cum_pv / cum_vol
+    df['VWAP'] = pv.groupby(df.index.date).cumsum() / df['Volume'].groupby(df.index.date).cumsum()
     return df
 
 def add_rsi(df, period=14):
     delta = df['Close'].diff()
     gain = delta.clip(lower=0).rolling(period).mean()
     loss = (-delta.clip(upper=0)).rolling(period).mean()
-    rs = gain / loss
-    df['RSI'] = 100 - (100 / (1 + rs))
+    df['RSI'] = 100 - (100 / (1 + gain / loss))
     return df
 
 def add_macd(df):
@@ -92,18 +86,14 @@ def add_macd(df):
     df['Hist'] = df['MACD'] - df['Signal']
     return df
 
-# 最安全 ADX（再也不會出錯！）
+# 最安全的 ADX（同樣用 np.maximum.reduce）
 def add_adx(df, period=14):
-    high = df['High']
-    low = df['Low']
-    close = df['Close']
-    prev_close = close.shift(1)
-
-    tr0 = high - low
-    tr1 = (high - prev_close).abs()
-    tr2 = (low - prev_close).abs()
-    tr = pd.DataFrame([tr0, tr1, tr2]).T.max(axis=1)  # 關鍵技巧
-    atr = tr.rolling(period).mean()
+    tr = np.maximum.reduce([
+        df['High'] - df['Low'],
+        (df['High'] - df['Close'].shift(1)).abs(),
+        (df['Low'] - df['Close'].shift(1)).abs()
+    ])
+    atr = pd.Series(tr, index=df.index).rolling(period).mean()
     df['ADX'] = atr.rolling(period).mean().fillna(0)
     return df
 
@@ -114,39 +104,29 @@ def plot_candlestick(df, symbol):
     df_plot = df.tail(10).copy()
 
     fig = go.Figure()
-
     fig.add_trace(go.Candlestick(
-        x=df_plot.index,
-        open=df_plot['Open'],
-        high=df_plot['High'],
-        low=df_plot['Low'],
-        close=df_plot['Close'],
-        name="K線",
-        increasing_line_color='#00ff88',
-        decreasing_line_color='#ff4444'
+        x=df_plot.index, open=df_plot['Open'], high=df_plot['High'],
+        low=df_plot['Low'], close=df_plot['Close'],
+        name="K線", increasing_line_color='#00ff88', decreasing_line_color='#ff4444'
     ))
 
-    # SuperTrend
     color = 'green' if df_plot['SuperTrend'].iloc[-1] == 1 else 'red'
-    fig.add_trace(go.Scatter(
-        x=df_plot.index, y=df_plot['ST_Line'],
-        mode='lines', name='SuperTrend',
-        line=dict(width=4, color=color)
-    ))
+    fig.add_trace(go.Scatter(x=df_plot.index, y=df_plot['ST_Line'],
+                            mode='lines', name='SuperTrend',
+                            line=dict(width=4, color=color)))
 
-    # 其他線
-    fig.add_trace(go.Scatter(x=df_plot.index, y=df_plot['VWAP'], mode='lines', name='VWAP', line=dict(color='orange', dash='dot')))
-    fig.add_trace(go.Scatter(x=df_plot.index, y=df_plot['MA20'], mode='lines', name='MA20', line=dict(color='blue')))
-    fig.add_trace(go.Scatter(x=df_plot.index, y=df_plot['MA50'], mode='lines', name='MA50', line=dict(color='purple')))
+    fig.add_trace(go.Scatter(x=df_plot.index, y=df_plot['VWAP'], mode='lines', name='VWAP',
+                            line=dict(color='orange', dash='dot')))
+    fig.add_trace(go.Scatter(x=df_plot.index, y=df_plot['MA20'], mode='lines', name='MA20',
+                            line=dict(color='blue')))
+    fig.add_trace(go.Scatter(x=df_plot.index, y=df_plot['MA50'], mode='lines', name='MA50',
+                            line=dict(color='purple')))
 
     fig.update_layout(
         title=f"{symbol}　最近 10 根 K 線",
-        template="plotly_dark",
-        height=600,
-        hovermode="x unified",
-        xaxis_rangeslider_visible=False
+        template="plotly_dark", height=600,
+        hovermode="x unified", xaxis_rangeslider_visible=False
     )
-
     st.plotly_chart(fig, use_container_width=True)
 
 # ============================
@@ -193,4 +173,4 @@ for symbol in [s.strip() for s in symbols if s.strip()]:
     except Exception as e:
         st.error(f"錯誤：{e}")
 
-st.success("全部完成！已徹底解決所有維度問題")
+st.success("全部完成！絕對穩定版")
