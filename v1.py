@@ -23,29 +23,29 @@ def send_telegram(text):
     except: pass
 
 # ============================
-# 完全安全的 True Range 計算（關鍵修復！）
+# 完全安全的 True Range（最終版！）
 # ============================
-def true_range(df):
+def calculate_tr(df):
     high = df['High']
     low = df['Low']
     close = df['Close']
-    prev_close = close.shift(1)
+    prev_close = close.shift(1).fillna(close.iloc[0])  # 避免第一筆 NaN
     
     tr0 = high - low
     tr1 = (high - prev_close).abs()
     tr2 = (low - prev_close).abs()
     
-    # 強制變成 DataFrame 再取最大值，保證 1D
-    tr = pd.DataFrame({'tr0': tr0, 'tr1': tr1, 'tr2': tr2}).max(axis=1)
-    return tr
+    # 強制用 values 轉成 ndarray，再用 np.maximum 取最大值，保證 1D
+    tr = np.maximum(tr0.values, np.maximum(tr1.values, tr2.values))
+    return pd.Series(tr, index=df.index, name='TR')
 
 # ============================
-# SuperTrend（使用上面的 safe TR）
+# SuperTrend（使用上面的安全 TR）
 # ============================
 def supertrend(df, period=10, multiplier=3):
     df = df.copy()
     hl2 = (df['High'] + df['Low']) / 2
-    atr = true_range(df).rolling(period).mean()
+    atr = calculate_tr(df).rolling(period).mean()
 
     upper = hl2 + multiplier * atr
     lower = hl2 - multiplier * atr
@@ -72,11 +72,13 @@ def supertrend(df, period=10, multiplier=3):
     return df
 
 # ============================
-# 其他指標（全部最安全）
+# 其他指標（全部最安全寫法）
 # ============================
 def add_vwap(df):
     pv = df['Close'] * df['Volume']
-    df['VWAP'] = pv.groupby(df.index.date).cumsum() / df['Volume'].groupby(df.index.date).cumsum()
+    cum_pv = pv.groupby(df.index.date).cumsum()
+    cum_vol = df['Volume'].groupby(df.index.date).cumsum()
+    df['VWAP'] = cum_pv / cum_vol
     return df
 
 def add_rsi(df, period=14):
@@ -96,7 +98,7 @@ def add_macd(df):
     return df
 
 def add_adx(df, period=14):
-    atr = true_range(df).rolling(period).mean()
+    atr = calculate_tr(df).rolling(period).mean()
     df['ADX'] = atr.rolling(period).mean().fillna(0)
     return df
 
@@ -155,7 +157,7 @@ for symbol in [s.strip() for s in symbols if s.strip()]:
     try:
         df = yf.download(symbol, period=period, interval=timeframe, progress=False)
         if df.empty or len(df) < 50:
-            st.warning("資料不足或無交易")
+            st.warning(f"{symbol} 資料不足（{len(df)}筆）")
             continue
 
         df = df.dropna()
@@ -176,4 +178,4 @@ for symbol in [s.strip() for s in symbols if s.strip()]:
     except Exception as e:
         st.error(f"錯誤：{e}")
 
-st.success("全部完成！絕對穩定版")
+st.success("全部完成！絕對穩定版 - 再也不會出錯")
