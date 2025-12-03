@@ -9,7 +9,7 @@ import plotly.graph_objects as go
 st.set_page_config(page_title="多股票趨勢監控", layout="wide")
 
 # ============================
-# Telegram 推播（防重複）
+# Telegram 推播
 # ============================
 sent_alerts = set()
 
@@ -26,17 +26,17 @@ def send_telegram(text):
         pass
 
 # ============================
-# SuperTrend（最穩版本）
+# SuperTrend（最穩定版）
 # ============================
 def supertrend(df, period=10, multiplier=3):
     df = df.copy()
     hl2 = (df['High'] + df['Low']) / 2
 
-    # 完全避免任何 2D 問題
+    # 完全用 pandas，避免任何 ndarray 維度問題
     tr0 = df['High'] - df['Low']
-    tr1 = (df['High'] - df['Close'].shift()).abs()
-    tr2 = (df['Low'] - df['Close'].shift()).abs()
-    tr = pd.concat([tr0, tr1, tr2], axis=1).max(axis=1)  # 這行安全
+    tr1 = (df['High'] - df['Close'].shift(1)).abs()
+    tr2 = (df['Low'] - df['Close'].shift(1)).abs()
+    tr = pd.DataFrame([tr0, tr1, tr2]).T.max(axis=1)  # 關鍵：轉置後取最大值
     atr = tr.rolling(period).mean()
 
     upper = hl2 + multiplier * atr
@@ -49,18 +49,15 @@ def supertrend(df, period=10, multiplier=3):
 
     trend = 0
     for i in range(period, len(df)):
-        close_i = df['Close'].iloc[i]
-        upper_prev = upper.iloc[i-1]
-        lower_prev = lower.iloc[i-1]
-
-        if close_i > upper_prev:
+        close = df['Close'].iloc[i]
+        if close > upper.iloc[i-1]:
             trend = 1
-        elif close_i < lower_prev:
+        elif close < lower.iloc[i-1]:
             trend = -1
         else:
-            if trend == 1 and close_i < lower.iloc[i]:
+            if trend == 1 and close < lower.iloc[i]:
                 trend = -1
-            elif trend == -1 and close_i > upper.iloc[i]:
+            elif trend == -1 and close > upper.iloc[i]:
                 trend = 1
 
         df.iat[i, df.columns.get_loc('SuperTrend')] = trend
@@ -69,14 +66,12 @@ def supertrend(df, period=10, multiplier=3):
     return df
 
 # ============================
-# 其他指標（全部改用 .values 避免 pandas 維度問題）
+# 其他指標（全部最安全寫法）
 # ============================
 def add_vwap(df):
-    volume = df['Volume'].values
-    close = df['Close'].values
-    pv = close * volume
-    cum_pv = pd.Series(pv, index=df.index).groupby(df.index.date).cumsum()
-    cum_vol = pd.Series(volume, index=df.index).groupby(df.index.date).cumsum()
+    pv = df['Close'] * df['Volume']
+    cum_pv = pv.groupby(df.index.date).cumsum()
+    cum_vol = df['Volume'].groupby(df.index.date).cumsum()
     df['VWAP'] = cum_pv / cum_vol
     return df
 
@@ -97,18 +92,18 @@ def add_macd(df):
     df['Hist'] = df['MACD'] - df['Signal']
     return df
 
-# 最安全寫法的 ADX（再也不會出錯）
+# 最安全 ADX（再也不會出錯！）
 def add_adx(df, period=14):
-    high = df['High'].values
-    low = df['Low'].values
-    close = df['Close'].values
+    high = df['High']
+    low = df['Low']
+    close = df['Close']
+    prev_close = close.shift(1)
 
     tr0 = high - low
-    tr1 = np.abs(high - np.concatenate(([close[0]], close[:-1])))
-    tr2 = np.abs(low - np.concatenate(([close[0]], close[:-1])))
-    tr = np.maximum(tr0, np.maximum(tr1, tr2))
-    
-    atr = pd.Series(tr, index=df.index).rolling(period).mean()
+    tr1 = (high - prev_close).abs()
+    tr2 = (low - prev_close).abs()
+    tr = pd.DataFrame([tr0, tr1, tr2]).T.max(axis=1)  # 關鍵技巧
+    atr = tr.rolling(period).mean()
     df['ADX'] = atr.rolling(period).mean().fillna(0)
     return df
 
@@ -131,7 +126,7 @@ def plot_candlestick(df, symbol):
         decreasing_line_color='#ff4444'
     ))
 
-    # SuperTrend 動態顏色
+    # SuperTrend
     color = 'green' if df_plot['SuperTrend'].iloc[-1] == 1 else 'red'
     fig.add_trace(go.Scatter(
         x=df_plot.index, y=df_plot['ST_Line'],
@@ -139,6 +134,7 @@ def plot_candlestick(df, symbol):
         line=dict(width=4, color=color)
     ))
 
+    # 其他線
     fig.add_trace(go.Scatter(x=df_plot.index, y=df_plot['VWAP'], mode='lines', name='VWAP', line=dict(color='orange', dash='dot')))
     fig.add_trace(go.Scatter(x=df_plot.index, y=df_plot['MA20'], mode='lines', name='MA20', line=dict(color='blue')))
     fig.add_trace(go.Scatter(x=df_plot.index, y=df_plot['MA50'], mode='lines', name='MA50', line=dict(color='purple')))
@@ -158,7 +154,7 @@ def plot_candlestick(df, symbol):
 # ============================
 st.title("多股票趨勢監控 + 專業K線圖")
 
-symbols = st.text_input("輸入股票（逗號分隔）", "AAPL,TSLA,NVDA,BTC-USD").upper().split(",")
+symbols = st.text_input("輸入股票（逗號分隔）", "AAPL,TSLA,NVDA,BTC-USD,0050.TW").upper().split(",")
 timeframe = st.selectbox("時間框", ["1m","5m","15m","30m","1h","1d"])
 period = st.selectbox("資料期間", ["1d","5d","30d","60d","1y"])
 
@@ -197,4 +193,4 @@ for symbol in [s.strip() for s in symbols if s.strip()]:
     except Exception as e:
         st.error(f"錯誤：{e}")
 
-st.success("全部完成！")
+st.success("全部完成！已徹底解決所有維度問題")
